@@ -236,6 +236,7 @@ def ValidateInstallRecoveryScript(input_tmp, info_dict):
 
   logging.info('Done checking %s', script_path)
 
+
 # Symlink files in `src` to `dst`, if the files do not
 # already exists in `dst` directory.
 def symlinkIfNotExists(src, dst):
@@ -245,6 +246,7 @@ def symlinkIfNotExists(src, dst):
     if os.path.exists(os.path.join(dst, filename)):
       continue
     os.symlink(os.path.join(src, filename), os.path.join(dst, filename))
+
 
 def ValidateVerifiedBootImages(input_tmp, info_dict, options):
   """Validates the Verified Boot related images.
@@ -424,6 +426,45 @@ def ValidateVerifiedBootImages(input_tmp, info_dict, options):
           stdoutdata.rstrip())
 
 
+def CheckDataInconsistency(lines):
+    build_prop = {}
+    for line in lines:
+      if line.startswith("import") or line.startswith("#"):
+        continue
+      if "=" not in line:
+        continue
+
+      key, value = line.rstrip().split("=", 1)
+      if key in build_prop:
+        logging.info("Duplicated key found for {}".format(key))
+        if value != build_prop[key]:
+          logging.error("Key {} is defined twice with different values {} vs {}"
+                        .format(key, value, build_prop[key]))
+          return key
+      build_prop[key] = value
+
+
+def CheckBuildPropDuplicity(input_tmp):
+  """Check all buld.prop files inside directory input_tmp, raise error
+  if they contain duplicates"""
+
+  if not os.path.isdir(input_tmp):
+    raise ValueError("Expect {} to be a directory".format(input_tmp))
+  for name in os.listdir(input_tmp):
+    if not name.isupper():
+      continue
+    for prop_file in ['build.prop', 'etc/build.prop']:
+      path = os.path.join(input_tmp, name, prop_file)
+      if not os.path.exists(path):
+        continue
+      logging.info("Checking {}".format(path))
+      with open(path, 'r') as fp:
+        dupKey = CheckDataInconsistency(fp.readlines())
+        if dupKey:
+          raise ValueError("{} contains duplicate keys for {}".format(
+              path, dupKey))
+
+
 def main():
   parser = argparse.ArgumentParser(
       description=__doc__,
@@ -459,8 +500,10 @@ def main():
   input_tmp = common.UnzipTemp(args.target_files)
 
   info_dict = common.LoadInfoDict(input_tmp)
-  with zipfile.ZipFile(args.target_files, 'r') as input_zip:
+  with zipfile.ZipFile(args.target_files, 'r', allowZip64=True) as input_zip:
     ValidateFileConsistency(input_zip, input_tmp, info_dict)
+
+  CheckBuildPropDuplicity(input_tmp)
 
   ValidateInstallRecoveryScript(input_tmp, info_dict)
 

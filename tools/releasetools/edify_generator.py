@@ -156,16 +156,6 @@ class EdifyGenerator(object):
            ");")
     self.script.append(self.WordWrap(cmd))
 
-  def RunBackup(self, command, mount_point, dynamic=False):
-    if self.fstab:
-      p = self.fstab[mount_point]
-    if dynamic:
-      self.script.append(('run_program("/tmp/install/bin/backuptool.sh", "%s", map_partition("%s"), "%s");' % (
-          command, p.device, p.fs_type)))
-    else:
-      self.script.append(('run_program("/tmp/install/bin/backuptool.sh", "%s", "%s", "%s");' % (
-          command, p.device, p.fs_type)))
-
   def ShowProgress(self, frac, dur):
     """Update the progress bar, advancing it over 'frac' over the next
     'dur' seconds.  'dur' may be zero to advance it via SetProgress
@@ -258,12 +248,6 @@ class EdifyGenerator(object):
           p.mount_point, mount_flags))
       self.mounts.add(p.mount_point)
 
-  def Unmount(self, mount_point):
-    """Unmount the partition with the given mount_point."""
-    if mount_point in self.mounts:
-      self.mounts.remove(mount_point)
-      self.script.append('unmount("%s");' % (mount_point,))
-
   def UnpackPackageDir(self, src, dst):
     """Unpack a given directory from the OTA package into the given
     destination directory."""
@@ -279,6 +263,19 @@ class EdifyGenerator(object):
   def Print(self, message):
     """Log a message to the screen (if the logs are visible)."""
     self.script.append('ui_print("%s");' % (message,))
+
+  def PrintPixelExperienceBanner(self, is_plus, android_version, build_id, build_date,
+                                  security_patch, device):
+    self.Print("----------------------------------------------")
+      self.Print("              HyperXOS")
+      self.Print("              by Mohit0033")
+    self.Print("----------------------------------------------")
+    self.Print(" Android version: %s"%(android_version))
+    self.Print(" Build id: %s"%(build_id))
+    self.Print(" Build date: %s"%(build_date))
+    self.Print(" Security patch: %s"%(security_patch))
+    self.Print(" Device: %s"%(device))
+    self.Print("----------------------------------------------")
 
   def TunePartition(self, partition, *options):
     fstab = self.fstab
@@ -327,7 +324,7 @@ class EdifyGenerator(object):
             len(patchpairs) == 2), \
         "Failed to handle unknown format. Use PatchPartition() instead."
 
-    # Also sanity check the args.
+    # Also validity check the args.
     assert tokens[3] == patchpairs[0], \
         "Found mismatching values for source SHA-1: {} vs {}".format(
             tokens[3], patchpairs[0])

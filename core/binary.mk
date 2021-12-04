@@ -145,12 +145,8 @@ ifeq (,$(strip $(my_cc))$(strip $(my_cxx))$(strip $(my_tidy_checks)))
   my_pool := $(GOMA_OR_RBE_POOL)
 endif
 
-# TODO(b/158212027): Remove `$(COVERAGE_PATHS)` from this condition when all users have been moved
-# to `NATIVE_COVERAGE_PATHS`.
-ifneq (,$(strip $(foreach dir,$(COVERAGE_PATHS) $(NATIVE_COVERAGE_PATHS),$(filter $(dir)%,$(LOCAL_PATH)))))
-# TODO(b/158212027): Remove `$(COVERAGE_EXCLUDE_PATHS)` from this condition when all users have been
-# moved to `NATIVE_COVERAGE_EXCLUDE_PATHS`.
-ifeq (,$(strip $(foreach dir,$(COVERAGE_EXCLUDE_PATHS) $(NATIVE_COVERAGE_EXCLUDE_PATHS),$(filter $(dir)%,$(LOCAL_PATH)))))
+ifneq (,$(strip $(foreach dir,$(NATIVE_COVERAGE_PATHS),$(filter $(dir)%,$(LOCAL_PATH)))))
+ifeq (,$(strip $(foreach dir,$(NATIVE_COVERAGE_EXCLUDE_PATHS),$(filter $(dir)%,$(LOCAL_PATH)))))
   my_native_coverage := true
 else
   my_native_coverage := false
@@ -180,6 +176,8 @@ my_ndk_sysroot_include :=
 my_ndk_sysroot_lib :=
 my_api_level := 10000
 
+my_arch := $(TARGET_$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH)
+
 ifneq ($(LOCAL_SDK_VERSION),)
   ifdef LOCAL_IS_HOST_MODULE
     $(error $(LOCAL_PATH): LOCAL_SDK_VERSION cannot be used in host module)
@@ -188,19 +186,7 @@ ifneq ($(LOCAL_SDK_VERSION),)
   # Make sure we've built the NDK.
   my_additional_dependencies += $(SOONG_OUT_DIR)/ndk_base.timestamp
 
-  # mips32r6 is not supported by the NDK. No released NDK contains these
-  # libraries, but the r10 in prebuilts/ndk had a local hack to add them :(
-  #
-  # We need to find a real solution to this problem, but until we do just drop
-  # mips32r6 things back to r10 to get the tree building again.
-  ifeq (mips32r6,$(TARGET_$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH_VARIANT))
-    ifeq ($(LOCAL_NDK_VERSION), current)
-      LOCAL_NDK_VERSION := r10
-    endif
-  endif
-
-  my_arch := $(TARGET_$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH)
-  ifneq (,$(filter arm64 mips64 x86_64,$(my_arch)))
+  ifneq (,$(filter arm64 x86_64,$(my_arch)))
     my_min_sdk_version := 21
   else
     my_min_sdk_version := $(MIN_SUPPORTED_SDK_VERSION)
@@ -214,6 +200,8 @@ ifneq ($(LOCAL_SDK_VERSION),)
   ifneq ($(my_ndk_api),current)
     my_ndk_api := $(call math_max,$(my_ndk_api),$(my_min_sdk_version))
   endif
+
+  my_ndk_crt_version := $(my_ndk_api)
 
   my_ndk_hist_api := $(my_ndk_api)
   ifeq ($(my_ndk_api),current)
@@ -234,17 +222,11 @@ ifneq ($(LOCAL_SDK_VERSION),)
       $(my_built_ndk)/sysroot/usr/include/$(my_ndk_triple) \
       $(my_ndk_sysroot)/usr/include \
 
-  # x86_64 and and mips64 are both multilib toolchains, so their libraries are
+  # x86_64 is a multilib toolchain, so their libraries are
   # installed in /usr/lib64. Aarch64, on the other hand, is not a multilib
   # compiler, so its libraries are in /usr/lib.
-  #
-  # Mips32r6 is yet another variation, with libraries installed in libr6.
-  #
-  # For the rest, the libraries are installed simply to /usr/lib.
-  ifneq (,$(filter x86_64 mips64,$(my_arch)))
+  ifneq (,$(filter x86_64,$(my_arch)))
     my_ndk_libdir_name := lib64
-  else ifeq (mips32r6,$(TARGET_$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH_VARIANT))
-    my_ndk_libdir_name := libr6
   else
     my_ndk_libdir_name := lib
   endif
@@ -258,11 +240,7 @@ ifneq ($(LOCAL_SDK_VERSION),)
   # hashes (which are much faster!), but shipping to older devices requires
   # the old style hash. Fortunately, we can build with both and it'll work
   # anywhere.
-  #
-  # This is not currently supported on MIPS architectures.
-  ifeq (,$(filter mips mips64,$(TARGET_$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH)))
-    my_ldflags += -Wl,--hash-style=both
-  endif
+  my_ldflags += -Wl,--hash-style=both
 
   # We don't want to expose the relocation packer to the NDK just yet.
   LOCAL_PACK_MODULE_RELOCATIONS := false
@@ -273,9 +251,6 @@ ifneq ($(LOCAL_SDK_VERSION),)
   my_ndk_stl_shared_lib_fullpath :=
   my_ndk_stl_static_lib :=
   my_cpu_variant := $(TARGET_$(LOCAL_2ND_ARCH_VAR_PREFIX)CPU_ABI)
-  ifeq (mips32r6,$(TARGET_$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH_VARIANT))
-    my_cpu_variant := mips32r6
-  endif
   LOCAL_NDK_STL_VARIANT := $(strip $(LOCAL_NDK_STL_VARIANT))
   ifeq (,$(LOCAL_NDK_STL_VARIANT))
     LOCAL_NDK_STL_VARIANT := system
@@ -311,10 +286,7 @@ ifneq ($(LOCAL_SDK_VERSION),)
       endif
     endif
 
-    ifneq (,$(filter armeabi armeabi-v7a,$(my_cpu_variant)))
-      my_ndk_stl_static_lib += $(my_libcxx_libdir)/libunwind.a
-    endif
-
+    my_ndk_stl_static_lib += $(my_libcxx_libdir)/libunwind.a
     my_ldlibs += -ldl
   else # LOCAL_NDK_STL_VARIANT must be none
     # Do nothing.
@@ -356,6 +328,15 @@ ifneq ($(LOCAL_USE_VNDK),)
     my_api_level := $(call codename-or-sdk-to-sdk,$(BOARD_VNDK_VERSION))
   endif
   my_cflags += -D__ANDROID_VNDK__
+  ifneq ($(LOCAL_USE_VNDK_VENDOR),)
+    # Vendor modules have LOCAL_USE_VNDK_VENDOR when
+    # BOARD_VNDK_VERSION is defined.
+    my_cflags += -D__ANDROID_VENDOR__
+  else ifneq ($(LOCAL_USE_VNDK_PRODUCT),)
+    # Product modules have LOCAL_USE_VNDK_PRODUCT when
+    # PRODUCT_PRODUCT_VNDK_VERSION is defined.
+    my_cflags += -D__ANDROID_PRODUCT__
+  endif
 endif
 
 ifndef LOCAL_IS_HOST_MODULE
@@ -384,8 +365,7 @@ else # LOCAL_IS_HOST_MODULE
 endif
 
 ifneq ($(LOCAL_SDK_VERSION),)
-  my_all_ndk_libraries := \
-      $(NDK_MIGRATED_LIBS) $(addprefix lib,$(NDK_PREBUILT_SHARED_LIBRARIES))
+  my_all_ndk_libraries := $(NDK_KNOWN_LIBS)
   my_ndk_shared_libraries := \
       $(filter $(my_all_ndk_libraries),\
         $(my_shared_libraries) $(my_system_shared_libraries))
@@ -509,27 +489,6 @@ my_soong_problems += dotdot_srcs
 endif
 ifneq ($(foreach i,$(my_c_includes),$(filter %/..,$(i))$(findstring /../,$(i))),)
 my_soong_problems += dotdot_incs
-endif
-
-####################################################
-## Add FDO flags if FDO is turned on and supported
-## Please note that we will do option filtering during FDO build.
-## i.e. Os->O2, remove -fno-early-inline and -finline-limit.
-##################################################################
-my_fdo_build :=
-ifneq ($(filter true always, $(LOCAL_FDO_SUPPORT)),)
-  ifeq ($(BUILD_FDO_INSTRUMENT),true)
-    my_cflags += $($(LOCAL_2ND_ARCH_VAR_PREFIX)TARGET_FDO_INSTRUMENT_CFLAGS)
-    my_ldflags += $($(LOCAL_2ND_ARCH_VAR_PREFIX)TARGET_FDO_INSTRUMENT_LDFLAGS)
-    my_fdo_build := true
-  else ifneq ($(filter true,$(BUILD_FDO_OPTIMIZE))$(filter always,$(LOCAL_FDO_SUPPORT)),)
-    my_cflags += $($(LOCAL_2ND_ARCH_VAR_PREFIX)TARGET_FDO_OPTIMIZE_CFLAGS)
-    my_fdo_build := true
-  endif
-  # Disable ccache (or other compiler wrapper) except gomacc, which
-  # can handle -fprofile-use properly.
-  my_cc_wrapper := $(filter $(GOMA_CC) $(RBE_WRAPPER),$(my_cc_wrapper))
-  my_cxx_wrapper := $(filter $(GOMA_CC) $(RBE_WRAPPER),$(my_cxx_wrapper))
 endif
 
 ###########################################################
@@ -697,7 +656,7 @@ rs_generated_cpps := $(addprefix \
 
 $(call track-src-file-gen,$(renderscript_sources),$(rs_generated_cpps))
 
-# This is just a dummy rule to make sure gmake doesn't skip updating the dependents.
+# This is just a no-op rule to make sure gmake doesn't skip updating the dependents.
 $(rs_generated_cpps) : $(RenderScript_file_stamp)
 	@echo "Updated RS generated cpp file $@."
 	$(hide) touch $@
@@ -1163,37 +1122,39 @@ asm_objects += $(asm_objects_asm)
 endif
 
 ###################################################################
+## Convert to sanitized names where they exist.
+## These lists come from sanitizerStaticLibsMap; see
+## build/soong/cc/sanitize.go
+##
+## $(1): list of static dependencies
+## $(2): name of sanitizer (e.g. cfi, hwasan)
+##################################################################
+define use_soong_sanitized_static_libraries
+  $(foreach lib,$(1),$(if $(filter $(lib),\
+      $(SOONG_$(2)_$(my_image_variant)_$(my_arch)_STATIC_LIBRARIES)),\
+      $(lib).$(2),$(lib)))
+endef
+
+###################################################################
 ## When compiling a CFI enabled target, use the .cfi variant of any
 ## static dependencies (where they exist).
 ##################################################################
-define use_soong_cfi_static_libraries
-  $(foreach l,$(1),$(if $(filter $(l),$(SOONG_CFI_STATIC_LIBRARIES)),\
-      $(l).cfi,$(l)))
-endef
-
 ifneq ($(filter cfi,$(my_sanitize)),)
-  my_whole_static_libraries := $(call use_soong_cfi_static_libraries,\
-    $(my_whole_static_libraries))
-  my_static_libraries := $(call use_soong_cfi_static_libraries,\
-    $(my_static_libraries))
+  my_whole_static_libraries := $(call use_soong_sanitized_static_libraries,\
+    $(my_whole_static_libraries),cfi)
+  my_static_libraries := $(call use_soong_sanitized_static_libraries,\
+    $(my_static_libraries),cfi)
 endif
 
-ifneq ($(LOCAL_USE_VNDK),)
-  my_soong_hwasan_static_libraries := $(SOONG_HWASAN_VENDOR_STATIC_LIBRARIES)
-else
-  my_soong_hwasan_static_libraries = $(SOONG_HWASAN_STATIC_LIBRARIES)
-endif
-
-define use_soong_hwasan_static_libraries
-  $(foreach l,$(1),$(if $(filter $(l),$(my_soong_hwasan_static_libraries)),\
-      $(l).hwasan,$(l)))
-endef
-
+###################################################################
+## When compiling a hwasan enabled target, use the .hwasan variant
+## of any static dependencies (where they exist).
+##################################################################
 ifneq ($(filter hwaddress,$(my_sanitize)),)
-  my_whole_static_libraries := $(call use_soong_hwasan_static_libraries,\
-    $(my_whole_static_libraries))
-  my_static_libraries := $(call use_soong_hwasan_static_libraries,\
-    $(my_static_libraries))
+  my_whole_static_libraries := $(call use_soong_sanitized_static_libraries,\
+    $(my_whole_static_libraries),hwasan)
+  my_static_libraries := $(call use_soong_sanitized_static_libraries,\
+    $(my_static_libraries),hwasan)
 endif
 
 ###########################################################
@@ -1382,11 +1343,6 @@ endif
 
 my_c_includes += $(TOPDIR)$(LOCAL_PATH) $(intermediates) $(generated_sources_dir)
 
-# The platform JNI header is for platform modules only.
-ifeq ($(LOCAL_SDK_VERSION)$(LOCAL_USE_VNDK),)
-  my_c_includes += $(JNI_H_INCLUDE)
-endif
-
 my_c_includes := $(foreach inc,$(my_c_includes),$(call clean-path,$(inc)))
 
 my_outside_includes := $(filter-out $(OUT_DIR)/%,$(filter /%,$(my_c_includes)) $(filter ../%,$(my_c_includes)))
@@ -1457,7 +1413,7 @@ my_system_shared_libraries_fullpath := \
 # lists and use addprefix.
 my_ndk_shared_libraries_fullpath := \
     $(foreach _lib,$(my_ndk_shared_libraries),\
-        $(if $(filter $(NDK_MIGRATED_LIBS),$(_lib)),\
+        $(if $(filter $(NDK_KNOWN_LIBS),$(_lib)),\
             $(my_built_ndk_libs)/$(_lib)$(so_suffix),\
             $(my_ndk_sysroot_lib)/$(_lib)$(so_suffix)))
 
@@ -1526,12 +1482,6 @@ my_cflags := $(call convert-to-clang-flags,$(my_cflags))
 my_cppflags := $(call convert-to-clang-flags,$(my_cppflags))
 my_asflags := $(call convert-to-clang-flags,$(my_asflags))
 my_ldflags := $(call convert-to-clang-flags,$(my_ldflags))
-
-ifeq ($(my_fdo_build), true)
-  my_cflags := $(patsubst -Os,-O2,$(my_cflags))
-  fdo_incompatible_flags := -fno-early-inlining -finline-limit=%
-  my_cflags := $(filter-out $(fdo_incompatible_flags),$(my_cflags))
-endif
 
 # No one should ever use this flag. On GCC it's mere presence will disable all
 # warnings, even those that are specified after it (contrary to typical warning
@@ -1607,7 +1557,7 @@ my_ldflags := $(filter-out -l%,$(my_ldlib_flags))
 my_allowed_ldlibs :=
 ifndef LOCAL_IS_HOST_MODULE
   ifneq ($(LOCAL_SDK_VERSION),)
-    my_allowed_ldlibs := $(addprefix -l,$(NDK_PREBUILT_SHARED_LIBRARIES))
+    my_allowed_ldlibs := $(NDK_KNOWN_LIBS:lib%=-l%)
   endif
 else
   my_allowed_ldlibs := $($(my_prefix)AVAILABLE_LIBRARIES)
@@ -1626,28 +1576,22 @@ my_ldlibs += $(my_cxx_ldlibs)
 ## Define PRIVATE_ variables from global vars
 ###########################################################
 ifndef LOCAL_IS_HOST_MODULE
+
 ifdef LOCAL_USE_VNDK
-my_target_global_c_includes := \
-    $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)PROJECT_INCLUDES)
-my_target_global_c_system_includes := \
-    $(TARGET_OUT_HEADERS) \
-    $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)PROJECT_SYSTEM_INCLUDES)
+  my_target_global_c_includes :=
+  my_target_global_c_system_includes := $(TARGET_OUT_HEADERS)
 else ifdef LOCAL_SDK_VERSION
-my_target_global_c_includes :=
-my_target_global_c_system_includes := $(my_ndk_stl_include_path) $(my_ndk_sysroot_include)
+  my_target_global_c_includes :=
+  my_target_global_c_system_includes := $(my_ndk_stl_include_path) $(my_ndk_sysroot_include)
 else ifdef BOARD_VNDK_VERSION
-my_target_global_c_includes := $(SRC_HEADERS) \
-    $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)PROJECT_INCLUDES) \
+  my_target_global_c_includes := $(SRC_HEADERS) \
     $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)C_INCLUDES)
-my_target_global_c_system_includes := $(SRC_SYSTEM_HEADERS) \
-    $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)PROJECT_SYSTEM_INCLUDES) \
+  my_target_global_c_system_includes := $(SRC_SYSTEM_HEADERS) \
     $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)C_SYSTEM_INCLUDES)
 else
-my_target_global_c_includes := $(SRC_HEADERS) \
-    $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)PROJECT_INCLUDES) \
+  my_target_global_c_includes := $(SRC_HEADERS) \
     $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)C_INCLUDES)
-my_target_global_c_system_includes := $(SRC_SYSTEM_HEADERS) $(TARGET_OUT_HEADERS) \
-    $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)PROJECT_SYSTEM_INCLUDES) \
+  my_target_global_c_system_includes := $(SRC_SYSTEM_HEADERS) $(TARGET_OUT_HEADERS) \
     $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)C_SYSTEM_INCLUDES)
 endif
 
@@ -1730,9 +1674,22 @@ endif
 ####################################################
 ## Import includes
 ####################################################
+imported_includes :=
+
+ifdef LOCAL_USE_VNDK
+  imported_includes += $(call intermediates-dir-for,HEADER_LIBRARIES,device_kernel_headers,$(my_kind),,$(LOCAL_2ND_ARCH_VAR_PREFIX),$(my_host_cross))
+else ifdef LOCAL_SDK_VERSION
+  # Apps shouldn't need device-specific kernel headers
+else ifdef BOARD_VNDK_VERSION
+  # For devices building with the VNDK, only the VNDK gets device-specific kernel headers by default
+  # In soong, it's entirely opt-in
+else
+  # For older non-VNDK builds, continue adding in kernel headers to everything like we used to
+  imported_includes += $(call intermediates-dir-for,HEADER_LIBRARIES,device_kernel_headers,$(my_kind),,$(LOCAL_2ND_ARCH_VAR_PREFIX),$(my_host_cross))
+endif
+
 imported_includes := $(strip \
-    $(if $(LOCAL_USE_VNDK),\
-      $(call intermediates-dir-for,HEADER_LIBRARIES,device_kernel_headers,$(my_kind),,$(LOCAL_2ND_ARCH_VAR_PREFIX),$(my_host_cross))) \
+    $(imported_includes) \
     $(foreach l, $(installed_shared_library_module_names), \
       $(call intermediates-dir-for,SHARED_LIBRARIES,$(l),$(my_kind),,$(LOCAL_2ND_ARCH_VAR_PREFIX),$(my_host_cross))) \
     $(foreach l, $(my_static_libraries) $(my_whole_static_libraries), \
@@ -1868,6 +1825,10 @@ SOONG_CONV.$(LOCAL_MODULE).DEPS := \
         $(my_shared_libraries) \
         $(my_system_shared_libraries))
 SOONG_CONV.$(LOCAL_MODULE).TYPE := native
+SOONG_CONV.$(LOCAL_MODULE).MAKEFILES := \
+    $(SOONG_CONV.$(LOCAL_MODULE).MAKEFILES) $(LOCAL_MODULE_MAKEFILE)
+SOONG_CONV.$(LOCAL_MODULE).INSTALLED:= \
+    $(SOONG_CONV.$(LOCAL_MODULE).INSTALLED) $(LOCAL_INSTALLED_MODULE)
 SOONG_CONV := $(SOONG_CONV) $(LOCAL_MODULE)
 
 ###########################################################
